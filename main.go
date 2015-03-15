@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"log"
 	"path/filepath"
 	"strings"
@@ -9,12 +10,14 @@ import (
 
 	"github.com/google/go-github/github"
 	"github.com/libgit2/git2go"
+	"gopkg.in/yaml.v2"
 )
 
 const (
-	TimeFormat = "20060102T150405Z" // ISO 8601 basic format
-	Refspec    = "+refs/*:refs/%s/%s/*"
-	GitHubUrl  = "https://github.com/%s.git"
+	TimeFormat    = "20060102T150405Z" // ISO 8601 basic format
+	Refspec       = "+refs/*:refs/%s/%s/*"
+	GitHubUrl     = "https://github.com/%s.git"
+	RepoDirPrefix = "github.com/"
 )
 
 func getOrCreateRepo(dataDir, name string) (*git.Repository, error) {
@@ -43,6 +46,7 @@ func fetch(r *git.Repository, GHRepoName string) error {
 		return err
 	}
 
+	log.Printf("Fetching %s...", GHRepoName)
 	err = rem.Fetch([]string{refspec}, nil, "")
 	if err != nil {
 		return err
@@ -58,7 +62,7 @@ func getForks(name string, client *github.Client) ([]string, error) {
 	owner, repo := parts[0], parts[1]
 
 	opt := &github.RepositoryListForksOptions{
-		ListOptions: github.ListOptions{PerPage: 1000},
+		ListOptions: github.ListOptions{PerPage: 100},
 	}
 
 	var allForks []github.Repository
@@ -72,6 +76,7 @@ func getForks(name string, client *github.Client) ([]string, error) {
 			break
 		}
 		opt.ListOptions.Page = resp.NextPage
+		log.Printf("Found %d forks, continuing...", len(allForks))
 	}
 
 	var result []string
@@ -82,41 +87,62 @@ func getForks(name string, client *github.Client) ([]string, error) {
 	return result, nil
 }
 
+func firstFetch(dataDir, name string, GitHubClient *github.Client) error {
+	repo, err := getOrCreateRepo(dataDir, RepoDirPrefix+name)
+	if err != nil {
+		return err
+	}
+
+	err = fetch(repo, name)
+	if err != nil {
+		return err
+	}
+
+	forks, err := getForks(name, GitHubClient)
+	if err != nil {
+		return err
+	}
+
+	for _, fork := range forks {
+		err = fetch(repo, fork)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+type Config struct {
+	Repositories []string `yaml:"Repositories"`
+	DataDir      string   `yaml:"DataDir"`
+
+	UserAgent    string `yaml:"UserAgent"`
+	GitHubID     string `yaml:"GitHubID"`
+	GitHubSecret string `yaml:"GitHubSecret"`
+}
+
 func main() {
-	var (
-		REPO     = "FiloSottile/Heartbleed"
-		DATA_DIR = "./continuum"
-		PREFIX   = "github.com/"
-
-		USER_AGENT    = "FiloSottile Git Time Machine"
-		GITHUB_ID     = "eabd9463ca136768a4d4"
-		GITHUB_SECRET = ""
-	)
-
-	repo, err := getOrCreateRepo(DATA_DIR, PREFIX+REPO)
+	configText, err := ioutil.ReadFile("config.yml")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	err = fetch(repo, REPO)
+	var C Config
+	err = yaml.Unmarshal(configText, &C)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	t := &github.UnauthenticatedRateLimitedTransport{
-		ClientID:     GITHUB_ID,
-		ClientSecret: GITHUB_SECRET,
+		ClientID:     C.GitHubID,
+		ClientSecret: C.GitHubSecret,
 	}
 	GitHubClient := github.NewClient(t.Client())
-	GitHubClient.UserAgent = USER_AGENT
+	GitHubClient.UserAgent = C.UserAgent
 
-	forks, err := getForks(REPO, GitHubClient)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for _, fork := range forks {
-		err = fetch(repo, fork)
+	for _, repo := range C.Repositories {
+		err = firstFetch(C.DataDir, repo, GitHubClient)
 		if err != nil {
 			log.Fatal(err)
 		}
