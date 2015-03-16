@@ -1,61 +1,13 @@
 package main
 
 import (
-	"fmt"
 	"io/ioutil"
 	"log"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/google/go-github/github"
-	"github.com/libgit2/git2go"
 	"gopkg.in/yaml.v2"
 )
-
-const (
-	TimeFormat    = "20060102T150405Z" // ISO 8601 basic format
-	Refspec       = "+refs/*:refs/%s/%s/*"
-	GitHubUrl     = "https://github.com/%s.git"
-	RepoDirPrefix = "github.com/"
-)
-
-func getOrCreateRepo(dataDir, name string) (*git.Repository, error) {
-	log.Printf("Working on %s...", name)
-
-	r, err := git.OpenRepository(filepath.Join(dataDir, name))
-	if err, ok := err.(*git.GitError); ok {
-		if err.Code == git.ErrNotFound {
-			log.Printf("Creating %s...", name)
-			return git.InitRepository(filepath.Join(dataDir, name), true)
-		}
-	}
-	return r, err
-}
-
-func fetch(r *git.Repository, GHRepoName string) error {
-	var (
-		timestamp = time.Now().UTC().Format(TimeFormat)
-		refspec   = fmt.Sprintf(Refspec, GHRepoName, timestamp)
-		url       = fmt.Sprintf(GitHubUrl, GHRepoName)
-	)
-
-	// Don't ask me why, but the refspec needs to be on both calls for the tags to get fetched
-	rem, err := r.CreateAnonymousRemote(url, refspec)
-	if err != nil {
-		return err
-	}
-
-	log.Printf("Fetching %s...", GHRepoName)
-	err = rem.Fetch([]string{refspec}, nil, "")
-	if err != nil {
-		return err
-	}
-
-	log.Printf("Fetched %s", GHRepoName)
-	rem.Free()
-	return nil
-}
 
 func getForks(name string, client *github.Client) ([]string, error) {
 	parts := strings.Split(name, "/")
@@ -88,12 +40,14 @@ func getForks(name string, client *github.Client) ([]string, error) {
 }
 
 func firstFetch(dataDir, name string, GitHubClient *github.Client) error {
-	repo, err := getOrCreateRepo(dataDir, RepoDirPrefix+name)
+	log.Printf("Working on %s...", name)
+
+	repo, err := OpenRepository(dataDir, name)
 	if err != nil {
 		return err
 	}
 
-	err = fetch(repo, name)
+	err = repo.Fetch(name)
 	if err != nil {
 		return err
 	}
@@ -103,14 +57,14 @@ func firstFetch(dataDir, name string, GitHubClient *github.Client) error {
 		return err
 	}
 
-	for _, fork := range forks {
-		err = fetch(repo, fork)
-		if err != nil {
+	for i, fork := range forks {
+		log.Printf("[%d / %d] %s", i+1, len(forks), fork)
+		if err := repo.Fetch(fork); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return repo.Close()
 }
 
 type Config struct {
