@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/FiloSottile/git2go"
@@ -13,10 +12,9 @@ import (
 )
 
 const (
-	Refspec       = "*:*" // "+refs/*:refs/%s/%s/*"
-	GitHubUrl     = "https://github.com/%s.git"
+	Refspec       = "+refs/*:refs/*"
+	GitHubUrl     = "git://github.com/%s.git"
 	RepoDirPrefix = "github.com"
-	RefsName      = "refs/uniq/%s"
 )
 
 const (
@@ -55,9 +53,8 @@ var RemoteCallbacks = &git.RemoteCallbacks{
 
 // Repository is not safe for concurrent use
 type Repository struct {
-	Path    string
-	Repo    *git.Repository
-	RefsMap map[git.Oid]struct{}
+	Path string
+	Repo *git.Repository
 
 	Db          *sql.DB
 	InsertQuery *sql.Stmt
@@ -95,8 +92,7 @@ func OpenDb(filename string) (*sql.DB, *sql.Stmt, error) {
 
 func OpenRepository(dataDir, name string) (*Repository, error) {
 	r := &Repository{
-		Path:    filepath.Join(dataDir, RepoDirPrefix, name),
-		RefsMap: make(map[git.Oid]struct{}),
+		Path: filepath.Join(dataDir, RepoDirPrefix, name),
 	}
 
 	repo, err := git.OpenRepository(r.Path)
@@ -123,24 +119,6 @@ func OpenRepository(dataDir, name string) (*Repository, error) {
 		return nil, err
 	}
 
-	iter, err := repo.NewReferenceIterator()
-	if err != nil {
-		return nil, err
-	}
-	for {
-		ref, err := iter.Next()
-		if e, ok := err.(*git.GitError); ok {
-			if e.Code == git.ErrIterOver {
-				break
-			}
-		}
-		if err != nil {
-			return nil, err
-		}
-
-		r.RefsMap[*ref.Target()] = struct{}{}
-	}
-
 	r.Repo = repo
 	return r, err
 }
@@ -150,7 +128,7 @@ func (r *Repository) Close() error {
 	return r.Db.Close()
 }
 
-func (r *Repository) Fetch(GHRepoName string) error {
+func (r *Repository) Fetch(GHRepoName string, isMain bool) error {
 	// TimeFormat = "20060102T150405Z"    // ISO 8601 basic format
 	// refPrefix = "refs/" + GHRepoName + "/" + timestamp + "/"
 	// timestamp := time.Now().UTC().Format(TimeFormat)
@@ -167,18 +145,20 @@ func (r *Repository) Fetch(GHRepoName string) error {
 		return err
 	}
 
-	// if err := rem.Fetch([]string{Refspec}, nil, ""); err != nil {
-	// 	return err
-	// }
-
-	if err := rem.ConnectFetch(); err != nil {
-		return err
+	if isMain {
+		if err := rem.Fetch([]string{Refspec}, nil, ""); err != nil {
+			return err
+		}
+	} else {
+		if err := rem.ConnectFetch(); err != nil {
+			return err
+		}
+		// TODO: check that obj only ref'd by a tag are downloaded
+		if err := rem.Download([]string{Refspec}); err != nil {
+			return err
+		}
+		rem.Disconnect()
 	}
-	// TODO: check that obj only ref'd by a tag are downloaded
-	if err := rem.Download([]string{Refspec}); err != nil {
-		return err
-	}
-	rem.Disconnect()
 
 	heads, err := rem.Ls()
 	if err != nil {
@@ -189,27 +169,8 @@ func (r *Repository) Fetch(GHRepoName string) error {
 			continue
 		}
 
-		name := head.Name
-		if strings.HasPrefix(name, "refs/") {
-			name = name[5:]
-		}
-		// name = refPrefix + name
-
 		_, err = r.InsertQuery.Exec(head.Id.String(),
-			GHRepoName, now, name)
-
-		if _, ok := r.RefsMap[*head.Id]; !ok {
-			refName := fmt.Sprintf(RefsName, head.Id.String())
-			if _, err := r.Repo.CreateReference(refName, head.Id,
-				true, nil, ""); err != nil {
-				return err
-			}
-
-			r.RefsMap[*head.Id] = struct{}{}
-
-			fmt.Fprintf(os.Stderr, "New ref: [%s] %s\n",
-				head.Id.String()[:7], name)
-		}
+			GHRepoName, now, head.Name)
 	}
 
 	rem.Free()

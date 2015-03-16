@@ -47,7 +47,7 @@ func firstFetch(dataDir, name string, GitHubClient *github.Client) error {
 		return err
 	}
 
-	err = repo.Fetch(name)
+	err = repo.Fetch(name, true)
 	if err != nil {
 		return err
 	}
@@ -59,7 +59,7 @@ func firstFetch(dataDir, name string, GitHubClient *github.Client) error {
 
 	for i, fork := range forks {
 		log.Printf("[%d / %d] %s", i+1, len(forks), fork)
-		if err := repo.Fetch(fork); err != nil {
+		if err := repo.Fetch(fork, false); err != nil {
 			return err
 		}
 	}
