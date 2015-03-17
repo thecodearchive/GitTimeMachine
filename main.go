@@ -43,6 +43,8 @@ type Config struct {
 	UserAgent    string `yaml:"UserAgent"`
 	GitHubID     string `yaml:"GitHubID"`
 	GitHubSecret string `yaml:"GitHubSecret"`
+
+	QueueSize int `yaml:"QueueSize"`
 }
 
 func main() {
@@ -82,10 +84,17 @@ func main() {
 		}
 	}
 
+	changedRepos := make(chan string, C.QueueSize)
+	go monitorRepoChanges(repositories, changedRepos, GitHubClient)
+
 	for _, repo := range repositories {
 		err = firstFetch(C.DataDir, repo, GitHubClient)
 		if err != nil {
 			log.Fatal(err)
 		}
+	}
+
+	for changedRepo := range changedRepos {
+		log.Println(changedRepo)
 	}
 }
