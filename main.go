@@ -3,41 +3,10 @@ package main
 import (
 	"io/ioutil"
 	"log"
-	"strings"
 
 	"github.com/google/go-github/github"
 	"gopkg.in/yaml.v2"
 )
-
-func getForks(name string, client *github.Client) ([]string, error) {
-	parts := strings.Split(name, "/")
-	owner, repo := parts[0], parts[1]
-
-	opt := &github.RepositoryListForksOptions{
-		ListOptions: github.ListOptions{PerPage: 100},
-	}
-
-	var allForks []github.Repository
-	for {
-		repos, resp, err := client.Repositories.ListForks(owner, repo, opt)
-		if err != nil {
-			return nil, err
-		}
-		allForks = append(allForks, repos...)
-		if resp.NextPage == 0 {
-			break
-		}
-		opt.ListOptions.Page = resp.NextPage
-		log.Printf("Found %d forks, continuing...", len(allForks))
-	}
-
-	var result []string
-	for _, f := range allForks {
-		result = append(result, *f.FullName)
-	}
-	log.Printf("Found %d forks", len(result))
-	return result, nil
-}
 
 func firstFetch(dataDir, name string, GitHubClient *github.Client) error {
 	log.Printf("Working on %s...", name)
@@ -68,8 +37,8 @@ func firstFetch(dataDir, name string, GitHubClient *github.Client) error {
 }
 
 type Config struct {
-	Repositories []string `yaml:"Repositories"`
-	DataDir      string   `yaml:"DataDir"`
+	Repositories []map[string]string `yaml:"Repositories"`
+	DataDir      string              `yaml:"DataDir"`
 
 	UserAgent    string `yaml:"UserAgent"`
 	GitHubID     string `yaml:"GitHubID"`
@@ -95,7 +64,25 @@ func main() {
 	GitHubClient := github.NewClient(t.Client())
 	GitHubClient.UserAgent = C.UserAgent
 
-	for _, repo := range C.Repositories {
+	var repositories []string
+	for _, e := range C.Repositories {
+		for entryType, entry := range e {
+			switch entryType {
+			case "repo":
+				repositories = append(repositories, entry)
+			case "owner":
+				result, err := getUserRepos(entry, GitHubClient)
+				if err != nil {
+					log.Fatal(err)
+				}
+				repositories = append(repositories, result...)
+			default:
+				log.Fatal("unknown Repositories type")
+			}
+		}
+	}
+
+	for _, repo := range repositories {
 		err = firstFetch(C.DataDir, repo, GitHubClient)
 		if err != nil {
 			log.Fatal(err)
