@@ -1,39 +1,83 @@
 package main
 
 import (
+	"database/sql"
 	"io/ioutil"
 	"log"
+	"path/filepath"
 
 	"github.com/google/go-github/github"
 	"gopkg.in/yaml.v2"
 )
 
-func firstFetch(dataDir, name string, GitHubClient *github.Client) error {
-	log.Printf("Working on %s...", name)
+func firstFetch(dataDir string, repositories []string,
+	reposInsert *sql.Stmt, GitHubClient *github.Client) {
 
-	repo, err := OpenRepository(dataDir, name)
-	if err != nil {
-		return err
+	for _, main := range repositories {
+		log.Printf("Doing the startup fetch of %s...", main)
+
+		repo, err := OpenRepository(dataDir, main)
+		if err != nil {
+			log.Println("[!] Startup fetch failure:", err)
+			continue
+		}
+
+		err = repo.Fetch(main, true)
+		if err != nil {
+			log.Println("[!] Startup fetch failure:", err)
+			continue
+		}
+		if _, err := reposInsert.Exec(main, main); err != nil {
+			log.Println("[!] Startup fetch failure:", err)
+			continue
+		}
+
+		forks, err := getForks(main, GitHubClient)
+		if err != nil {
+			log.Println("[!] Startup fetch failure:", err)
+			continue
+		}
+
+		for i, fork := range forks {
+			log.Printf("[%d / %d] %s", i+1, len(forks), fork)
+			if err := repo.Fetch(fork, false); err != nil {
+				log.Println("[!] Startup fetch failure:", err)
+				continue
+			}
+			if _, err := reposInsert.Exec(fork, main); err != nil {
+				log.Println("[!] Startup fetch failure:", err)
+				continue
+			}
+		}
+
+		repo.Close()
 	}
+}
 
-	err = repo.Fetch(name, true)
-	if err != nil {
-		return err
-	}
+func monitorRepoChanges(reposSelect *sql.Stmt, changedRepos chan [2]string,
+	GitHubClient *github.Client) {
+	firehose := make(chan github.Event, 30)
+	go gitHubFirehose(firehose, GitHubClient)
 
-	forks, err := getForks(name, GitHubClient)
-	if err != nil {
-		return err
-	}
+	for e := range firehose {
+		if *e.Type == "PushEvent" {
+			name := *e.Repo.Name
 
-	for i, fork := range forks {
-		log.Printf("[%d / %d] %s", i+1, len(forks), fork)
-		if err := repo.Fetch(fork, false); err != nil {
-			return err
+			var mainName string
+			err := reposSelect.QueryRow(name).Scan(&mainName)
+			switch {
+			case err == sql.ErrNoRows:
+				// not a monitored repo
+			case err != nil:
+				log.Println("[!] Name lookup failure", err)
+			default:
+				changedRepos <- [...]string{name, mainName}
+				if len(changedRepos) > cap(changedRepos)/10*9 {
+					log.Println("[!] Queue is filling up:", len(changedRepos))
+				}
+			}
 		}
 	}
-
-	return repo.Close()
 }
 
 type Config struct {
@@ -58,6 +102,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	reposDB, reposInsert, reposSelect, err := OpenReposDb(
+		filepath.Join(C.DataDir, "repos.sqlite"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer reposDB.Close()
 
 	t := &github.UnauthenticatedRateLimitedTransport{
 		ClientID:     C.GitHubID,
@@ -84,15 +135,10 @@ func main() {
 		}
 	}
 
-	changedRepos := make(chan string, C.QueueSize)
-	go monitorRepoChanges(repositories, changedRepos, GitHubClient)
+	changedRepos := make(chan [2]string, C.QueueSize)
+	go monitorRepoChanges(reposSelect, changedRepos, GitHubClient)
 
-	for _, repo := range repositories {
-		err = firstFetch(C.DataDir, repo, GitHubClient)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
+	go firstFetch(C.DataDir, repositories, reposInsert, GitHubClient)
 
 	for changedRepo := range changedRepos {
 		log.Println(changedRepo)

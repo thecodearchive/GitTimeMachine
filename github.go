@@ -8,6 +8,8 @@ import (
 	"github.com/google/go-github/github"
 )
 
+const FirehoseFrequency = 3 * time.Second
+
 func getForks(name string, client *github.Client) ([]string, error) {
 	parts := strings.Split(name, "/")
 	owner, repo := parts[0], parts[1]
@@ -34,7 +36,7 @@ func getForks(name string, client *github.Client) ([]string, error) {
 	for _, f := range allForks {
 		result = append(result, *f.FullName)
 	}
-	log.Printf("Found %d forks", len(result))
+	log.Printf("Found %d forks of %s", len(result), name)
 	return result, nil
 }
 
@@ -80,12 +82,14 @@ func gitHubFirehose(firehose chan github.Event,
 
 	for {
 		// Make sure that a second passed since last round
-		time.Sleep(lastRoundTime.Add(time.Second).Sub(time.Now()))
+		time.Sleep(lastRoundTime.Add(FirehoseFrequency).Sub(time.Now()))
 		lastRoundTime = time.Now()
 
-		events, _, err := GitHubClient.Activity.ListEvents(nil)
+		events, _, err := GitHubClient.Activity.ListEvents(
+			&github.ListOptions{PerPage: 100},
+		)
 		if err != nil {
-			log.Println("Firehose error:", err)
+			log.Println("[!] Firehose error:", err)
 			continue
 		}
 
@@ -101,46 +105,10 @@ func gitHubFirehose(firehose chan github.Event,
 			}
 		}
 
-		if newResultsCount > 25 && len(lastRoundResults) > 0 {
+		if newResultsCount > 90 && len(lastRoundResults) > 0 {
 			log.Println("[!] Firehose getting behind:", newResultsCount)
 		}
 
 		lastRoundResults = thisRoundResults
-	}
-}
-
-func monitorRepoChanges(repositories []string, changedRepos chan string,
-	GitHubClient *github.Client) {
-
-	monitoredReposCount := 0
-	monitoredRepos := make(map[string]struct{})
-	for _, mainRepo := range repositories {
-		log.Printf("[-] %s", mainRepo)
-
-		monitoredRepos[mainRepo] = struct{}{}
-		monitoredReposCount += 1
-
-		forks, err := getForks(mainRepo, GitHubClient)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		for _, fork := range forks {
-			monitoredRepos[fork] = struct{}{}
-			monitoredReposCount += 1
-		}
-	}
-
-	log.Printf("[+] Monitoring %d repositories...", monitoredReposCount)
-
-	firehose := make(chan github.Event, 30)
-	go gitHubFirehose(firehose, GitHubClient)
-	for e := range firehose {
-		if *e.Type == "PushEvent" {
-			name := *e.Repo.Name
-			if _, ok := monitoredRepos[name]; ok {
-				changedRepos <- name
-			}
-		}
 	}
 }

@@ -8,27 +8,12 @@ import (
 	"time"
 
 	"github.com/FiloSottile/git2go"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 const (
 	Refspec       = "+refs/*:refs/*"
 	GitHubUrl     = "git://github.com/%s.git"
 	RepoDirPrefix = "github.com"
-)
-
-const (
-	sqlInit = `
-		CREATE TABLE "Heads" (
-			"Sha" TEXT,
-			"Repository" TEXT,
-			"Timestamp" TEXT,
-			"Name" TEXT
-		);`
-	sqlIndex = `
-		CREATE INDEX "REPOSITORY" ON "Heads" ("Repository");
-		CREATE INDEX "TIMESTAMP" ON "Heads" ("Timestamp");`
-	sqlInsert = `INSERT INTO "Heads" VALUES (?, ?, ?, ?)`
 )
 
 var RemoteCallbacks = &git.RemoteCallbacks{
@@ -60,36 +45,6 @@ type Repository struct {
 	InsertQuery *sql.Stmt
 }
 
-func OpenDb(filename string) (*sql.DB, *sql.Stmt, error) {
-	isNew := false
-	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		isNew = true
-	}
-
-	db, err := sql.Open("sqlite3", filename)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if isNew {
-		_, err = db.Exec(sqlInit)
-		if err != nil {
-			return nil, nil, err
-		}
-		_, err = db.Exec(sqlIndex)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-
-	insertQuery, err := db.Prepare(sqlInsert)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return db, insertQuery, nil
-}
-
 func OpenRepository(dataDir, name string) (*Repository, error) {
 	r := &Repository{
 		Path: filepath.Join(dataDir, RepoDirPrefix, name),
@@ -105,7 +60,7 @@ func OpenRepository(dataDir, name string) (*Repository, error) {
 		return nil, err
 	}
 
-	db, insertQuery, err := OpenDb(r.Path + ".sqlite")
+	db, insertQuery, err := OpenRefsDb(r.Path + ".sqlite")
 	if err != nil {
 		return nil, err
 	}
